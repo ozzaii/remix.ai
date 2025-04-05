@@ -1,449 +1,410 @@
-import React, { useEffect } from 'react';
-import { StyleSheet, View, Text, Dimensions, Platform, ScrollView, useWindowDimensions } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
+import React, { useEffect, useState } from 'react';
+import { StyleSheet, View, Text, ScrollView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+
+// Import premium components
+import SkiaHeader from './components/common/SkiaHeader';
+import SkiaCard from './components/common/SkiaCard';
+import SkiaButton from './components/common/SkiaButton';
+import SkiaBeatVisualizer from './components/visualizer/SkiaBeatVisualizer';
+import AudioInteractionLayer from './components/visualizer/AudioInteractionLayer';
+import SkiaPlaybackControls from './components/visualizer/SkiaPlaybackControls';
+
+// Import optimization and error handling
+import PerformanceOptimization from './components/performance/PerformanceOptimization';
+import ErrorHandler, { useErrorHandler } from './components/feedback/ErrorHandler';
+import VisualEffects from './components/effects/VisualEffects';
+
+// Import services
+import { AudioEngine } from './services/audioEngine/audioEngine';
+
+// Import styles
 import { colors } from './theme/colors';
 import { globalStyles } from './theme/styles';
-import BeatVisualizer from './components/visualizer/BeatVisualizer';
-import PlaybackControls from './components/visualizer/PlaybackControls';
-import { useAudioEngine } from './services/audioEngine/audioEngine';
-import Header from './components/common/Header';
-import GradientCard from './components/common/GradientCard';
-import Button from './components/common/Button';
-import { isSmallDevice, isTablet } from './utils/performance';
-import { useFeedback } from './components/feedback/FeedbackProvider';
-import useAppState from './hooks/useAppState';
 
-// For testing purposes, we'll create a simple app that directly shows the visualizer screen
-export default function TestApp() {
-  const { showFeedback } = useFeedback();
-  const appState = useAppState();
+// Define initial state
+const initialInstruments = {
+  kick: [true, false, false, false, true, false, false, false, true, false, false, false, true, false, false, false],
+  snare: [false, false, true, false, false, false, true, false, false, false, true, false, false, false, true, false],
+  hihat: [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true],
+  bass: [true, false, false, false, false, false, true, false, false, false, false, false, true, false, false, true],
+};
+
+const TestApp = () => {
+  // State
+  const [instruments, setInstruments] = useState(initialInstruments);
+  const [currentStep, setCurrentStep] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [bpm, setBpm] = useState(120);
+  const [isEditing, setIsEditing] = useState(true);
+  const [audioInteractionActive, setAudioInteractionActive] = useState(false);
+  const [visualEffectsActive, setVisualEffectsActive] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   
-  const [isPlaying, setIsPlaying] = React.useState(false);
-  const [currentStep, setCurrentStep] = React.useState(0);
-  const [bpm, setBpm] = React.useState(120);
-  const [effects, setEffects] = React.useState({ reverb: 0.3, delay: 0.2 });
-  const [isEditing, setIsEditing] = React.useState(false);
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [error, setError] = React.useState(null);
-  const [orientation, setOrientation] = React.useState('portrait');
+  // Get error handler
+  const { showToast, handleError } = useErrorHandler();
   
-  // Get current window dimensions for responsive layout
-  const { width, height } = useWindowDimensions();
-  
-  // Update orientation on dimension change
-  useEffect(() => {
-    setOrientation(width > height ? 'landscape' : 'portrait');
-  }, [width, height]);
-  
-  const [instruments, setInstruments] = React.useState({
-    kick: [1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0],
-    snare: [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0],
-    hihat: [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0],
-    bass: [1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0]
-  });
-  
-  const audioEngine = useAudioEngine();
-  
-  // Handle app state changes (background/foreground)
-  useEffect(() => {
-    if (appState === 'active') {
-      // App came to foreground
-      if (isPlaying) {
-        // Resume playback if it was playing
-        showFeedback('info', 'Playback resumed');
-      }
-    } else if (appState === 'background') {
-      // App went to background
-      if (isPlaying) {
-        // Pause playback
-        setIsPlaying(false);
-        showFeedback('info', 'Playback paused while app in background');
-      }
-    }
-  }, [appState]);
+  // Audio engine ref
+  const audioEngineRef = React.useRef<AudioEngine | null>(null);
   
   // Initialize audio engine
   useEffect(() => {
     const initAudio = async () => {
+      setIsLoading(true);
+      
       try {
-        setIsLoading(true);
-        await audioEngine.initialize();
+        audioEngineRef.current = new AudioEngine();
+        await audioEngineRef.current.init();
+        console.log('Audio engine initialized successfully');
+        showToast('Ses motoru başarıyla başlatıldı', 'success');
         setIsLoading(false);
-        showFeedback('success', 'Audio engine initialized successfully');
-      } catch (err) {
-        console.error('Failed to initialize audio engine:', err);
-        setError('Failed to initialize audio. Please restart the app.');
+      } catch (error) {
+        console.error('Failed to initialize audio engine:', error);
+        handleError(error instanceof Error ? error : new Error('Ses motoru başlatılamadı'));
         setIsLoading(false);
-        showFeedback('error', 'Failed to initialize audio engine');
       }
     };
     
     initAudio();
     
+    // Show welcome toast
+    setTimeout(() => {
+      showToast('Remix.AI\'ye Hoş Geldiniz!', 'info');
+    }, 1000);
+    
+    // Cleanup
     return () => {
-      audioEngine.cleanup();
+      if (audioEngineRef.current) {
+        audioEngineRef.current.cleanup();
+      }
     };
   }, []);
   
-  // Update audio engine when beat pattern changes
-  useEffect(() => {
+  // Handle step toggle
+  const handleStepToggle = (instrument: string, stepIndex: number) => {
     try {
-      audioEngine.updateBeatPattern({
-        bpm,
-        instruments,
-        effects
+      setInstruments(prev => {
+        const newInstruments = { ...prev };
+        newInstruments[instrument] = [...prev[instrument]];
+        newInstruments[instrument][stepIndex] = !newInstruments[instrument][stepIndex];
+        
+        // Play sound when toggling
+        if (audioEngineRef.current && newInstruments[instrument][stepIndex]) {
+          audioEngineRef.current.playSound(instrument);
+        }
+        
+        return newInstruments;
       });
-    } catch (err) {
-      console.error('Failed to update beat pattern:', err);
-      showFeedback('error', 'Failed to update beat pattern');
+      
+      // Trigger visual effects briefly
+      setVisualEffectsActive(true);
+      setTimeout(() => setVisualEffectsActive(false), 500);
+      
+    } catch (error) {
+      handleError(error instanceof Error ? error : new Error('Adım değiştirilemedi'));
     }
-  }, [bpm, instruments, effects]);
+  };
   
   // Handle play/pause
-  useEffect(() => {
-    if (isPlaying) {
-      try {
-        const interval = audioEngine.play((step) => {
-          setCurrentStep(step);
-        });
-        
-        return () => {
-          audioEngine.stop();
-          clearInterval(interval);
-        };
-      } catch (err) {
-        console.error('Failed to start playback:', err);
-        setIsPlaying(false);
-        showFeedback('error', 'Failed to start playback');
-      }
-    } else {
-      audioEngine.stop();
-      setCurrentStep(0);
-    }
-  }, [isPlaying]);
-  
-  // Toggle play/pause
   const handlePlayPause = () => {
-    const newState = !isPlaying;
-    setIsPlaying(newState);
-    showFeedback(newState ? 'success' : 'info', newState ? 'Playback started' : 'Playback stopped');
-  };
-  
-  // Toggle edit mode
-  const handleEditToggle = () => {
-    const newEditState = !isEditing;
-    setIsEditing(newEditState);
-    
-    if (isPlaying && newEditState) {
-      setIsPlaying(false);
-      showFeedback('info', 'Playback stopped for editing');
-    }
-    
-    showFeedback('info', newEditState ? 'Edit mode enabled' : 'View mode enabled');
-  };
-  
-  // Handle instrument step toggle
-  const handleStepToggle = (instrument, stepIndex) => {
-    if (!isEditing) return;
-    
     try {
-      const newInstruments = { ...instruments };
-      newInstruments[instrument][stepIndex] = newInstruments[instrument][stepIndex] ? 0 : 1;
-      setInstruments(newInstruments);
-    } catch (err) {
-      console.error('Failed to toggle step:', err);
-      showFeedback('error', 'Failed to update beat pattern');
+      if (isPlaying) {
+        // Stop playback
+        setIsPlaying(false);
+        setCurrentStep(null);
+        setVisualEffectsActive(false);
+        
+        if (audioEngineRef.current) {
+          audioEngineRef.current.stopSequence();
+        }
+        
+        showToast('Oynatma durduruldu', 'info');
+      } else {
+        // Start playback
+        setIsPlaying(true);
+        setVisualEffectsActive(true);
+        
+        if (audioEngineRef.current) {
+          audioEngineRef.current.playSequence(instruments, bpm, (step) => {
+            setCurrentStep(step);
+          });
+        }
+        
+        showToast('Oynatma başlatıldı', 'success');
+      }
+    } catch (error) {
+      handleError(error instanceof Error ? error : new Error('Oynatma kontrolü başarısız oldu'));
     }
   };
   
   // Handle BPM change
-  const handleBpmChange = (newBpm) => {
+  const handleBpmChange = (newBpm: number) => {
     try {
       setBpm(newBpm);
-      if (newBpm < 80) {
-        showFeedback('info', 'Slow tempo selected');
-      } else if (newBpm > 160) {
-        showFeedback('info', 'Fast tempo selected');
-      }
-    } catch (err) {
-      console.error('Failed to change BPM:', err);
-      showFeedback('error', 'Failed to update tempo');
-    }
-  };
-  
-  // Handle effects change
-  const handleEffectsChange = (type, value) => {
-    try {
-      setEffects({
-        ...effects,
-        [type]: value
-      });
       
-      if (value > 0.8) {
-        showFeedback('info', `High ${type} effect applied`);
+      if (isPlaying && audioEngineRef.current) {
+        audioEngineRef.current.updateBpm(newBpm);
       }
-    } catch (err) {
-      console.error('Failed to change effects:', err);
-      showFeedback('error', 'Failed to update effects');
+    } catch (error) {
+      handleError(error instanceof Error ? error : new Error('BPM değiştirilemedi'));
     }
   };
   
-  // Reset to default pattern
+  // Handle reset
   const handleReset = () => {
     try {
+      setInstruments(initialInstruments);
       setIsPlaying(false);
-      setCurrentStep(0);
-      setBpm(120);
-      setEffects({ reverb: 0.3, delay: 0.2 });
-      setInstruments({
-        kick: [1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0],
-        snare: [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0],
-        hihat: [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0],
-        bass: [1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0]
-      });
-      showFeedback('success', 'Beat pattern reset to default');
-    } catch (err) {
-      console.error('Failed to reset pattern:', err);
-      showFeedback('error', 'Failed to reset beat pattern');
+      setCurrentStep(null);
+      setVisualEffectsActive(false);
+      
+      if (audioEngineRef.current) {
+        audioEngineRef.current.stopSequence();
+      }
+      
+      showToast('Beat sıfırlandı', 'info');
+    } catch (error) {
+      handleError(error instanceof Error ? error : new Error('Beat sıfırlanamadı'));
     }
   };
   
-  if (isLoading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Initializing REMIX.AI...</Text>
-      </View>
-    );
-  }
-  
-  if (error) {
-    return (
-      <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>{error}</Text>
-        <Button 
-          title="Try Again" 
-          onPress={() => window.location.reload()} 
-          style={styles.errorButton}
-        />
-      </View>
-    );
-  }
-  
-  // Responsive layout based on orientation and device size
-  const getResponsiveLayout = () => {
-    if (orientation === 'landscape' && !isSmallDevice) {
-      return (
-        <View style={styles.landscapeContainer}>
-          <View style={styles.landscapeLeft}>
-            <GradientCard style={styles.infoCard}>
-              <Text style={styles.infoTitle}>Beat Creator</Text>
-              <Text style={styles.infoDescription}>
-                Create your own beats by toggling steps in edit mode. Adjust BPM and effects to customize your sound.
-              </Text>
-            </GradientCard>
-            
-            <PlaybackControls
-              isPlaying={isPlaying}
-              bpm={bpm}
-              effects={effects}
-              onPlayPause={handlePlayPause}
-              onBpmChange={handleBpmChange}
-              onEffectsChange={handleEffectsChange}
-              isEditing={isEditing}
-            />
-            
-            <View style={styles.actionButtons}>
-              <Button
-                title="Reset Pattern"
-                icon="refresh-outline"
-                variant="secondary"
-                onPress={handleReset}
-                style={styles.resetButton}
-              />
-            </View>
-          </View>
-          
-          <View style={styles.landscapeRight}>
-            <View style={styles.visualizerContainer}>
-              <BeatVisualizer
-                instruments={instruments}
-                currentStep={currentStep}
-                isEditing={isEditing}
-                onStepToggle={handleStepToggle}
-              />
-            </View>
-          </View>
-        </View>
-      );
+  // Handle parameter change
+  const handleParameterChange = (parameter: string, value: number) => {
+    try {
+      if (audioEngineRef.current) {
+        switch (parameter) {
+          case 'frequency':
+            audioEngineRef.current.setParameter('frequency', value * 2);
+            break;
+          case 'amplitude':
+            audioEngineRef.current.setParameter('amplitude', value);
+            break;
+        }
+      }
+    } catch (error) {
+      handleError(error instanceof Error ? error : new Error('Parametre değiştirilemedi'));
     }
-    
-    // Default portrait layout
-    return (
-      <ScrollView 
-        style={styles.scrollView}
-        contentContainerStyle={[
-          styles.scrollContent,
-          isTablet && styles.tabletScrollContent
-        ]}
-        showsVerticalScrollIndicator={false}
-      >
-        <GradientCard style={styles.infoCard}>
-          <Text style={styles.infoTitle}>Beat Creator</Text>
-          <Text style={styles.infoDescription}>
-            Create your own beats by toggling steps in edit mode. Adjust BPM and effects to customize your sound.
-          </Text>
-        </GradientCard>
+  };
+  
+  // Handle trigger sample
+  const handleTriggerSample = (x: number, y: number) => {
+    try {
+      if (audioEngineRef.current) {
+        // Map x position to instrument
+        const width = Platform.OS === 'web' ? window.innerWidth : require('react-native').Dimensions.get('window').width;
+        const normalizedX = x / width;
         
-        <View style={styles.visualizerContainer}>
-          <BeatVisualizer
-            instruments={instruments}
-            currentStep={currentStep}
-            isEditing={isEditing}
-            onStepToggle={handleStepToggle}
-          />
-        </View>
+        let instrument = 'kick';
+        if (normalizedX < 0.25) {
+          instrument = 'kick';
+        } else if (normalizedX < 0.5) {
+          instrument = 'snare';
+        } else if (normalizedX < 0.75) {
+          instrument = 'hihat';
+        } else {
+          instrument = 'bass';
+        }
         
-        <PlaybackControls
-          isPlaying={isPlaying}
-          bpm={bpm}
-          effects={effects}
-          onPlayPause={handlePlayPause}
-          onBpmChange={handleBpmChange}
-          onEffectsChange={handleEffectsChange}
-          isEditing={isEditing}
-        />
+        audioEngineRef.current.playSound(instrument);
         
-        <View style={styles.actionButtons}>
-          <Button
-            title="Reset Pattern"
-            icon="refresh-outline"
-            variant="secondary"
-            onPress={handleReset}
-            style={styles.resetButton}
-          />
-        </View>
-        
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            REMIX.AI - The Ultimate Beat Creation Experience
-          </Text>
-        </View>
-      </ScrollView>
+        // Trigger visual effects briefly
+        setVisualEffectsActive(true);
+        setTimeout(() => setVisualEffectsActive(false), 300);
+      }
+    } catch (error) {
+      handleError(error instanceof Error ? error : new Error('Örnek tetiklenemedi'));
+    }
+  };
+  
+  // Toggle editing mode
+  const toggleEditingMode = () => {
+    setIsEditing(!isEditing);
+    showToast(isEditing ? 'Görüntüleme moduna geçildi' : 'Düzenleme moduna geçildi', 'info');
+  };
+  
+  // Toggle audio interaction
+  const toggleAudioInteraction = () => {
+    setAudioInteractionActive(!audioInteractionActive);
+    showToast(
+      audioInteractionActive 
+        ? 'Ses etkileşimi devre dışı bırakıldı' 
+        : 'Ses etkileşimi etkinleştirildi', 
+      'info'
     );
+  };
+  
+  // Handle share
+  const handleShare = () => {
+    showToast('Beat paylaşılıyor...', 'info');
+    
+    // Simulate API call
+    setTimeout(() => {
+      showToast('Beat başarıyla paylaşıldı!', 'success');
+    }, 1500);
+  };
+  
+  // Handle save
+  const handleSave = () => {
+    showToast('Beat kaydediliyor...', 'info');
+    
+    // Simulate API call
+    setTimeout(() => {
+      showToast('Beat başarıyla kaydedildi!', 'success');
+    }, 1500);
   };
   
   return (
-    <>
-      <StatusBar style="light" />
-      <SafeAreaView style={styles.container}>
-        <Header 
-          title={isEditing ? "Edit Beat" : "REMIX.AI"}
-          showBackButton={false}
-          rightComponent={
-            <Button
-              title={isEditing ? "View" : "Edit"}
-              variant="outline"
-              size="small"
-              icon={isEditing ? "eye-outline" : "create-outline"}
-              onPress={handleEditToggle}
-            />
-          }
-        />
-        
-        {getResponsiveLayout()}
-      </SafeAreaView>
-    </>
+    <ErrorHandler>
+      <PerformanceOptimization optimizationLevel="high">
+        <VisualEffects 
+          effectType="particles"
+          intensity={0.5}
+          triggerEffect={visualEffectsActive}
+          color1="#7C4DFF"
+          color2="#2196F3"
+        >
+          <GestureHandlerRootView style={styles.container}>
+            <StatusBar style="light" />
+            <SafeAreaView style={styles.safeArea}>
+              <SkiaHeader 
+                title="Beat Görüntüleyici"
+                subtitle="Remix.AI"
+                animationVariant="energetic"
+                rightComponent={
+                  <SkiaButton
+                    label={isEditing ? "Görüntüle" : "Düzenle"}
+                    size="small"
+                    variant="outline"
+                    onPress={toggleEditingMode}
+                  />
+                }
+              />
+              
+              <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+                <SkiaCard style={styles.visualizerCard}>
+                  <SkiaBeatVisualizer
+                    instruments={instruments}
+                    currentStep={currentStep}
+                    isEditing={isEditing}
+                    onStepToggle={handleStepToggle}
+                  />
+                </SkiaCard>
+                
+                <View style={styles.controlsContainer}>
+                  <SkiaPlaybackControls
+                    isPlaying={isPlaying}
+                    bpm={bpm}
+                    onPlayPause={handlePlayPause}
+                    onBpmChange={handleBpmChange}
+                    onReset={handleReset}
+                    onShare={handleShare}
+                  />
+                </View>
+                
+                <SkiaCard 
+                  style={styles.interactionCard}
+                  gradientColors={['#7C4DFF', '#2196F3']}
+                  glowIntensity={0.4}
+                  animationVariant="energetic"
+                  onPress={toggleAudioInteraction}
+                >
+                  <Text style={styles.interactionTitle}>Ses Etkileşimi</Text>
+                  <Text style={styles.interactionSubtitle}>
+                    {audioInteractionActive 
+                      ? "Etkileşimli ses kontrollerini kullanın" 
+                      : "Etkileşimli ses kontrollerini etkinleştirmek için dokunun"}
+                  </Text>
+                  
+                  {audioInteractionActive && (
+                    <View style={styles.audioInteractionContainer}>
+                      <AudioInteractionLayer
+                        isActive={audioInteractionActive}
+                        onParameterChange={handleParameterChange}
+                        onTriggerSample={handleTriggerSample}
+                      />
+                    </View>
+                  )}
+                </SkiaCard>
+                
+                <View style={styles.buttonRow}>
+                  <SkiaButton
+                    label="Kaydet"
+                    icon={<Text style={styles.buttonIcon}>💾</Text>}
+                    onPress={handleSave}
+                    style={styles.actionButton}
+                    isLoading={isLoading}
+                  />
+                  
+                  <SkiaButton
+                    label="Paylaş"
+                    icon={<Text style={styles.buttonIcon}>🔗</Text>}
+                    variant="secondary"
+                    onPress={handleShare}
+                    style={styles.actionButton}
+                    isLoading={isLoading}
+                  />
+                </View>
+              </ScrollView>
+            </SafeAreaView>
+          </GestureHandlerRootView>
+        </VisualEffects>
+      </PerformanceOptimization>
+    </ErrorHandler>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.deepBlack,
+    backgroundColor: colors.background,
   },
-  loadingContainer: {
+  safeArea: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.deepBlack,
-  },
-  loadingText: {
-    ...globalStyles.heading2,
-    color: colors.textPrimary,
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: colors.deepBlack,
-    padding: 20,
-  },
-  errorText: {
-    ...globalStyles.bodyText,
-    color: colors.error,
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  errorButton: {
-    marginTop: 20,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: 32,
   },
-  tabletScrollContent: {
-    paddingHorizontal: 64,
-    maxWidth: 800,
-    alignSelf: 'center',
-    width: '100%',
+  visualizerCard: {
+    marginBottom: 16,
   },
-  infoCard: {
-    marginBottom: 24,
+  controlsContainer: {
+    height: 120,
+    marginBottom: 16,
   },
-  infoTitle: {
-    ...globalStyles.heading2,
+  interactionCard: {
+    marginBottom: 16,
+  },
+  interactionTitle: {
+    ...globalStyles.heading3,
     color: colors.textPrimary,
-    marginBottom: 8,
+    marginBottom: 4,
   },
-  infoDescription: {
+  interactionSubtitle: {
     ...globalStyles.bodyText,
     color: colors.textSecondary,
+    marginBottom: 16,
   },
-  visualizerContainer: {
-    marginBottom: 24,
+  audioInteractionContainer: {
+    marginTop: 16,
+    height: 200,
   },
-  actionButtons: {
-    marginTop: 24,
-    alignItems: 'center',
-  },
-  resetButton: {
-    width: isSmallDevice ? '100%' : '80%',
-  },
-  footer: {
-    marginTop: 40,
-    alignItems: 'center',
-  },
-  footerText: {
-    ...globalStyles.captionText,
-    color: colors.textSecondary,
-  },
-  // Landscape layout styles
-  landscapeContainer: {
-    flex: 1,
+  buttonRow: {
     flexDirection: 'row',
-    padding: 16,
-  },
-  landscapeLeft: {
-    flex: 1,
-    marginRight: 16,
     justifyContent: 'space-between',
+    marginTop: 16,
   },
-  landscapeRight: {
-    flex: 1,
-    justifyContent: 'center',
+  actionButton: {
+    flex: 0.48,
+  },
+  buttonIcon: {
+    fontSize: 16,
   },
 });
+
+export default TestApp;
