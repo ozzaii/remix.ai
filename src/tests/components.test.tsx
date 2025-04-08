@@ -13,7 +13,7 @@ import { App } from '../components/App';
 import { MainScreen } from '../components/MainScreen';
 import { ConversationalInterface } from '../components/ConversationalInterface';
 import { SoundDeployment } from '../components/SoundDeployment';
-import { AudioVisualizer } from '../components/AudioVisualizer';
+import { BeatVisualizer } from '../components/BeatVisualizer';
 import { BeatLibrary } from '../components/BeatLibrary';
 import { AuthContainer } from '../components/AuthContainer';
 import { SocialSharing } from '../components/SocialSharing';
@@ -205,10 +205,10 @@ describe('REMIX.AI Components', () => {
     });
   });
 
-  // AudioVisualizer Component Tests
-  describe('AudioVisualizer Component', () => {
+  // BeatVisualizer Component Tests
+  describe('BeatVisualizer Component', () => {
     it('renders without crashing', () => {
-      render(<AudioVisualizer />);
+      render(<BeatVisualizer />);
       // Visual component, so we just check it renders
     });
   });

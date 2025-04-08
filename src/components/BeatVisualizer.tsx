@@ -1,421 +1,654 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ScrollView, TextInput, ActivityIndicator } from 'react-native';
-import { useConversation } from '../services/claude/ConversationContext';
-import { useEventBusService } from '../services/serviceLocator';
-import { PromptTemplates, PromptTemplateType } from '../services/claude/promptTemplates';
-
 /**
- * Enhanced Beat Visualizer component for REMIX.AI
+ * BeatVisualizer Component for REMIX.AI
  * 
- * This component provides a polished user interface for visualizing and
- * interacting with beat patterns. It includes responsive design, animations,
- * and integration with the event bus.
+ * A premium, futuristic visualization component for displaying and editing
+ * 64-step beat patterns with high-quality animations and interactions.
  */
-const BeatVisualizer = ({ beatData, onStepToggle, isPlaying }) => {
-  const eventBusService = useEventBusService();
-  const [activeStep, setActiveStep] = useState(-1);
-  const [hoveredStep, setHoveredStep] = useState(-1);
+
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  View,
+  StyleSheet,
+  TouchableOpacity,
+  Text,
+  Dimensions,
+  Pressable,
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Canvas, RoundedRect, vec, useValue, useTouchHandler, useComputedValue, useSharedValueEffect, Skia, Group, Paint, Shadow } from '@shopify/react-native-skia';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  Easing,
+  FadeIn,
+  FadeOut,
+  interpolateColor,
+  useAnimatedReaction,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useBeats } from '../state';
+import { useAudioEngineService } from '../services';
+import { useAudio } from '../state';
+import LottieView from 'lottie-react-native';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+// Constants for visualization
+const GRID_ROWS = 8; // Maximum number of instruments
+const GRID_COLS = 16; // Steps per page (4 pages for 64 steps)
+const CELL_MARGIN = 2;
+const CELL_BORDER_RADIUS = 6;
+const ACTIVE_SCALE = 1.1;
+const INACTIVE_SCALE = 1.0;
+
+// Premium color palette
+const COLORS = {
+  background: '#121214',
+  gridBackground: '#1A1A1F',
+  primary: '#6E44FF',
+  primaryLight: '#9E7DFF',
+  secondary: '#00D2FF',
+  accent: '#FF44A1',
+  inactive: '#2A2A35',
+  active: '#6E44FF',
+  activeGlow: '#9E7DFF',
+  text: '#FFFFFF',
+  textSecondary: '#AAAACC',
+  success: '#44FFB2',
+  warning: '#FFCC44',
+  error: '#FF4466',
+  gradientStart: '#6E44FF',
+  gradientEnd: '#00D2FF',
+};
+
+// Instrument icons and colors
+const INSTRUMENTS = {
+  kick: { name: 'Kick', color: '#FF44A1', icon: '🥁' },
+  snare: { name: 'Snare', color: '#44FFB2', icon: '👏' },
+  hihat: { name: 'Hi-Hat', color: '#FFCC44', icon: '🎩' },
+  clap: { name: 'Clap', color: '#00D2FF', icon: '👏' },
+  tom: { name: 'Tom', color: '#FF8844', icon: '🥁' },
+  cymbal: { name: 'Cymbal', color: '#FFFF44', icon: '💿' },
+  percussion: { name: 'Perc', color: '#44FF44', icon: '🎵' },
+  fx: { name: 'FX', color: '#FF44FF', icon: '✨' },
+};
+
+interface BeatVisualizerProps {
+  onStepToggle?: (instrument: string, step: number, value: boolean) => void;
+  onPageChange?: (page: number) => void;
+  showInstrumentLabels?: boolean;
+  showStepNumbers?: boolean;
+  showPlayhead?: boolean;
+  editable?: boolean;
+  compact?: boolean;
+}
+
+const BeatVisualizer: React.FC<BeatVisualizerProps> = ({
+  onStepToggle,
+  onPageChange,
+  showInstrumentLabels = true,
+  showStepNumbers = true,
+  showPlayhead = true,
+  editable = true,
+  compact = false,
+}) => {
+  // Get state from context
+  const { currentBeat, toggleStep } = useBeats();
+  const audioEngineService = useAudioEngineService();
+  const { isPlaying, currentStep } = useAudio();
+
+  // Local state
+  const [currentPage, setCurrentPage] = useState(0);
+  const [instrumentsExpanded, setInstrumentsExpanded] = useState(false);
+  const [selectedInstrument, setSelectedInstrument] = useState<string | null>(null);
   
-  // Subscribe to step updates from the audio engine
+  // Animations
+  const pageTransition = useSharedValue(0);
+  const playheadPosition = useSharedValue(-1);
+  const gridOpacity = useSharedValue(1);
+  const gridScale = useSharedValue(1);
+  
+  // Calculate dimensions based on screen size and compact mode
+  const cellSize = useMemo(() => {
+    const baseSize = compact ? 
+      Math.min(24, (SCREEN_WIDTH - 40) / GRID_COLS) : 
+      Math.min(32, (SCREEN_WIDTH - 40) / GRID_COLS);
+    return baseSize - CELL_MARGIN * 2;
+  }, [compact, SCREEN_WIDTH]);
+  
+  const gridWidth = useMemo(() => 
+    (cellSize + CELL_MARGIN * 2) * GRID_COLS, 
+    [cellSize]
+  );
+  
+  const gridHeight = useMemo(() => 
+    (cellSize + CELL_MARGIN * 2) * (compact ? 4 : GRID_ROWS), 
+    [cellSize, compact]
+  );
+
+  // Update playhead position based on current step
   useEffect(() => {
-    const unsubscribe = eventBusService.subscribe('audio:step:change', (payload) => {
-      setActiveStep(payload.step);
-    });
+    if (currentStep !== null && currentStep >= 0) {
+      const page = Math.floor(currentStep / GRID_COLS);
+      const stepInPage = currentStep % GRID_COLS;
+      
+      if (page !== currentPage) {
+        setCurrentPage(page);
+        pageTransition.value = withTiming(page, { duration: 300 });
+      }
+      
+      playheadPosition.value = stepInPage;
+    } else {
+      playheadPosition.value = -1;
+    }
+  }, [currentStep, currentPage, pageTransition, playheadPosition]);
+
+  // Handle page change
+  const handlePageChange = useCallback((newPage: number) => {
+    if (newPage >= 0 && newPage < 4) { // 4 pages for 64 steps
+      setCurrentPage(newPage);
+      pageTransition.value = withTiming(newPage, { duration: 300 });
+      onPageChange?.(newPage);
+    }
+  }, [onPageChange, pageTransition]);
+
+  // Handle step toggle
+  const handleStepToggle = useCallback((instrument: string, step: number) => {
+    if (!editable) return;
     
-    return unsubscribe;
-  }, [eventBusService]);
-  
-  // Calculate grid dimensions based on patterns
-  const gridDimensions = useMemo(() => {
-    if (!beatData || !beatData.patterns || beatData.patterns.length === 0) {
-      return { rows: 0, cols: 64 };
+    const globalStep = currentPage * GRID_COLS + step;
+    const newValue = !(currentBeat?.patterns?.[instrument]?.[globalStep] ?? false);
+    
+    // Play the sound when toggling
+    if (newValue) {
+      audioEngineService.playSample(instrument);
     }
     
-    return {
-      rows: beatData.patterns.length,
-      cols: 64 // Fixed at 64 steps
-    };
-  }, [beatData]);
-  
-  // Render a single step in the grid
-  const renderStep = useCallback((patternIndex, stepIndex) => {
-    if (!beatData || !beatData.patterns[patternIndex]) return null;
+    // Update state
+    toggleStep(instrument, globalStep, newValue);
+    onStepToggle?.(instrument, globalStep, newValue);
     
-    const pattern = beatData.patterns[patternIndex];
-    const isActive = pattern.pattern.steps[stepIndex];
-    const isCurrentStep = stepIndex === activeStep;
-    const isHovered = stepIndex === hoveredStep;
-    const isBeatStart = stepIndex % 4 === 0;
-    const isBarStart = stepIndex % 16 === 0;
-    
-    return (
-      <TouchableOpacity
-        key={`step-${patternIndex}-${stepIndex}`}
-        style={[
-          styles.step,
-          isActive && styles.activeStep,
-          isCurrentStep && styles.currentStep,
-          isHovered && styles.hoveredStep,
-          isBeatStart && styles.beatStart,
-          isBarStart && styles.barStart
-        ]}
-        onPress={() => onStepToggle(patternIndex, stepIndex)}
-        onMouseEnter={() => setHoveredStep(stepIndex)}
-        onMouseLeave={() => setHoveredStep(-1)}
-      />
-    );
-  }, [beatData, activeStep, hoveredStep, onStepToggle]);
-  
-  // Render a row of steps for a pattern
-  const renderPatternRow = useCallback((patternIndex) => {
-    if (!beatData || !beatData.patterns[patternIndex]) return null;
-    
-    const pattern = beatData.patterns[patternIndex];
-    
-    return (
-      <View key={`pattern-${patternIndex}`} style={styles.patternRow}>
-        <View style={styles.patternInfo}>
-          <Text style={styles.patternName} numberOfLines={1}>
-            {pattern.sampleName}
-          </Text>
-          <Text style={styles.patternCategory}>
-            {pattern.category}
-          </Text>
+    // Animate the grid
+    gridScale.value = withSpring(ACTIVE_SCALE, { damping: 10, stiffness: 200 });
+    setTimeout(() => {
+      gridScale.value = withSpring(INACTIVE_SCALE);
+    }, 100);
+  }, [currentBeat, currentPage, toggleStep, onStepToggle, audioEngineService, gridScale, editable]);
+
+  // Animated styles
+  const pageAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: -pageTransition.value * gridWidth }],
+  }));
+
+  const gridAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: gridOpacity.value,
+    transform: [{ scale: gridScale.value }],
+  }));
+
+  // Render the beat grid
+  const renderBeatGrid = () => {
+    if (!currentBeat || !currentBeat.patterns) {
+      return (
+        <View style={styles.emptyStateContainer}>
+          <LottieView
+            source={require('../../assets/animations/empty-state.json')}
+            autoPlay
+            loop
+            style={styles.emptyAnimation}
+          />
+          <Text style={styles.emptyStateText}>No beat selected</Text>
+          <Text style={styles.emptyStateSubtext}>Create a beat using the conversational interface</Text>
         </View>
-        
-        <ScrollView 
-          horizontal 
-          style={styles.stepsContainer}
-          showsHorizontalScrollIndicator={false}
-        >
-          <View style={styles.stepsRow}>
-            {Array.from({ length: 64 }).map((_, stepIndex) => 
-              renderStep(patternIndex, stepIndex)
-            )}
-          </View>
-        </ScrollView>
-      </View>
-    );
-  }, [beatData, renderStep]);
-  
-  // If no beat data, show placeholder
-  if (!beatData || !beatData.patterns || beatData.patterns.length === 0) {
+      );
+    }
+
+    const instruments = Object.keys(currentBeat.patterns).slice(0, compact ? 4 : GRID_ROWS);
+    
     return (
-      <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>
-          No beat pattern available. Create a beat to visualize it here.
-        </Text>
-      </View>
-    );
-  }
-  
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.beatTitle}>{beatData.title || 'Untitled Beat'}</Text>
-        <Text style={styles.beatInfo}>BPM: {beatData.bpm || 120}</Text>
+      <Animated.View style={[styles.gridScrollContainer, pageAnimatedStyle]}>
+        {instruments.map((instrument, rowIndex) => {
+          const pattern = currentBeat.patterns[instrument];
+          
+          return (
+            <View key={instrument} style={styles.gridRow}>
+              {showInstrumentLabels && (
+                <View style={styles.instrumentLabel}>
+                  <View style={[styles.instrumentIcon, { backgroundColor: INSTRUMENTS[instrument]?.color || COLORS.primary }]}>
+                    <Text style={styles.instrumentIconText}>{INSTRUMENTS[instrument]?.icon || '🎵'}</Text>
+                  </View>
+                  <Text style={styles.instrumentText}>{INSTRUMENTS[instrument]?.name || instrument}</Text>
+                </View>
+              )}
+              
+              <View style={styles.stepsContainer}>
+                {Array.from({ length: GRID_COLS }).map((_, colIndex) => {
+                  const stepIndex = currentPage * GRID_COLS + colIndex;
+                  const isActive = pattern[stepIndex];
+                  
+                  return (
+                    <TouchableOpacity
+                      key={colIndex}
+                      style={[
+                        styles.stepCell,
+                        { 
+                          width: cellSize, 
+                          height: cellSize,
+                          margin: CELL_MARGIN,
+                        },
+                      ]}
+                      onPress={() => handleStepToggle(instrument, colIndex)}
+                      activeOpacity={0.7}
+                      disabled={!editable}
+                    >
+                      {isActive ? (
+                        <LinearGradient
+                          colors={[INSTRUMENTS[instrument]?.color || COLORS.primary, COLORS.primaryLight]}
+                          style={[styles.activeCell, { borderRadius: CELL_BORDER_RADIUS }]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                        >
+                          <Animated.View 
+                            style={styles.activeCellInner}
+                            entering={FadeIn.duration(200)}
+                            exiting={FadeOut.duration(200)}
+                          />
+                        </LinearGradient>
+                      ) : (
+                        <View style={[
+                          styles.inactiveCell, 
+                          { 
+                            borderRadius: CELL_BORDER_RADIUS,
+                            backgroundColor: colIndex % 4 === 0 ? COLORS.inactive : '#232330',
+                          }
+                        ]} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          );
+        })}
         
-        <View style={styles.transportControls}>
-          <TouchableOpacity 
-            style={[styles.transportButton, isPlaying && styles.stopButton]}
-            onPress={() => {
-              eventBusService.publish('audio:transport', { 
-                action: isPlaying ? 'stop' : 'play',
-                beatData
-              });
-            }}
+        {/* Playhead */}
+        {showPlayhead && isPlaying && (
+          <Animated.View 
+            style={[
+              styles.playhead,
+              {
+                height: gridHeight,
+                transform: [{ 
+                  translateX: playheadPosition.value * (cellSize + CELL_MARGIN * 2) + CELL_MARGIN 
+                }],
+                width: cellSize,
+                borderRadius: CELL_BORDER_RADIUS,
+              }
+            ]}
+          />
+        )}
+      </Animated.View>
+    );
+  };
+
+  // Render page indicators
+  const renderPageIndicators = () => {
+    return (
+      <View style={styles.pageIndicatorsContainer}>
+        {Array.from({ length: 4 }).map((_, index) => (
+          <TouchableOpacity
+            key={index}
+            style={[
+              styles.pageIndicator,
+              currentPage === index && styles.pageIndicatorActive
+            ]}
+            onPress={() => handlePageChange(index)}
           >
-            <Text style={styles.transportButtonText}>
-              {isPlaying ? 'Stop' : 'Play'}
+            <Text style={[
+              styles.pageIndicatorText,
+              currentPage === index && styles.pageIndicatorTextActive
+            ]}>
+              {index + 1}
             </Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.transportButton}
-            onPress={() => {
-              eventBusService.publish('beat:save', { beatData });
-            }}
-          >
-            <Text style={styles.transportButtonText}>Save</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={styles.transportButton}
-            onPress={() => {
-              eventBusService.publish('beat:share', { beatData });
-            }}
-          >
-            <Text style={styles.transportButtonText}>Share</Text>
-          </TouchableOpacity>
-        </View>
+        ))}
       </View>
-      
-      <View style={styles.beatGrid}>
-        <View style={styles.gridLabels}>
-          <View style={styles.cornerLabel}>
-            <Text style={styles.cornerText}>Patterns</Text>
-          </View>
-          
-          <View style={styles.stepLabels}>
-            {Array.from({ length: 16 }).map((_, i) => (
-              <Text key={`label-${i}`} style={styles.stepLabel}>{i + 1}</Text>
-            ))}
-          </View>
-        </View>
-        
-        <ScrollView style={styles.patternsContainer}>
-          {Array.from({ length: gridDimensions.rows }).map((_, patternIndex) => 
-            renderPatternRow(patternIndex)
+    );
+  };
+
+  // Render step numbers
+  const renderStepNumbers = () => {
+    if (!showStepNumbers) return null;
+    
+    return (
+      <View style={styles.stepNumbersContainer}>
+        {Array.from({ length: GRID_COLS }).map((_, index) => (
+          <Text key={index} style={[
+            styles.stepNumber,
+            { 
+              width: cellSize, 
+              margin: CELL_MARGIN,
+              color: index % 4 === 0 ? COLORS.textSecondary : '#555566'
+            }
+          ]}>
+            {currentPage * GRID_COLS + index + 1}
+          </Text>
+        ))}
+      </View>
+    );
+  };
+
+  // Main render
+  return (
+    <GestureHandlerRootView style={styles.container}>
+      <LinearGradient
+        colors={[COLORS.background, '#1A1A24']}
+        style={styles.gradientBackground}
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>Beat Visualizer</Text>
+          {currentBeat && (
+            <Text style={styles.beatInfo}>
+              {currentBeat.name} • {currentBeat.bpm} BPM
+            </Text>
           )}
-        </ScrollView>
-      </View>
-      
-      <View style={styles.beatControls}>
-        <View style={styles.controlGroup}>
-          <Text style={styles.controlLabel}>BPM</Text>
-          <View style={styles.bpmControl}>
-            <TouchableOpacity 
-              style={styles.bpmButton}
-              onPress={() => {
-                const newBpm = Math.max(60, (beatData.bpm || 120) - 5);
-                eventBusService.publish('audio:bpm:change', { bpm: newBpm });
-              }}
-            >
-              <Text style={styles.bpmButtonText}>-</Text>
-            </TouchableOpacity>
-            
-            <Text style={styles.bpmValue}>{beatData.bpm || 120}</Text>
-            
-            <TouchableOpacity 
-              style={styles.bpmButton}
-              onPress={() => {
-                const newBpm = Math.min(200, (beatData.bpm || 120) + 5);
-                eventBusService.publish('audio:bpm:change', { bpm: newBpm });
-              }}
-            >
-              <Text style={styles.bpmButtonText}>+</Text>
-            </TouchableOpacity>
-          </View>
         </View>
         
-        <View style={styles.controlGroup}>
-          <Text style={styles.controlLabel}>Swing</Text>
-          <View style={styles.sliderContainer}>
-            <View style={styles.slider}>
-              <View 
-                style={[
-                  styles.sliderFill, 
-                  { width: `${(beatData.swing || 0) * 100}%` }
-                ]} 
-              />
-            </View>
-            <Text style={styles.sliderValue}>{Math.round((beatData.swing || 0) * 100)}%</Text>
+        {renderStepNumbers()}
+        
+        <Animated.View style={[styles.gridContainer, gridAnimatedStyle]}>
+          {renderBeatGrid()}
+        </Animated.View>
+        
+        {renderPageIndicators()}
+        
+        {editable && (
+          <View style={styles.controlsContainer}>
+            <TouchableOpacity
+              style={styles.controlButton}
+              onPress={() => {
+                if (isPlaying) {
+                  audioEngineService.stopSequence();
+                } else {
+                  audioEngineService.playSequence(currentBeat?.patterns || {}, currentBeat?.bpm || 120);
+                }
+              }}
+            >
+              <LinearGradient
+                colors={[COLORS.primary, COLORS.secondary]}
+                style={styles.controlButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+              >
+                <Text style={styles.controlButtonText}>
+                  {isPlaying ? 'Stop' : 'Play'}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
+            
+            <TouchableOpacity
+              style={styles.controlButton}
+              onPress={() => setInstrumentsExpanded(!instrumentsExpanded)}
+            >
+              <LinearGradient
+                colors={['#444455', '#333344']}
+                style={styles.controlButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+              >
+                <Text style={styles.controlButtonText}>
+                  {instrumentsExpanded ? 'Hide Instruments' : 'Show Instruments'}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
           </View>
-        </View>
-      </View>
-    </View>
+        )}
+        
+        {/* Instrument selector panel */}
+        {instrumentsExpanded && (
+          <Animated.View 
+            style={styles.instrumentsPanel}
+            entering={FadeIn.duration(300)}
+            exiting={FadeOut.duration(300)}
+          >
+            <View style={styles.instrumentsGrid}>
+              {Object.entries(INSTRUMENTS).map(([key, instrument]) => (
+                <TouchableOpacity
+                  key={key}
+                  style={[
+                    styles.instrumentItem,
+                    selectedInstrument === key && styles.instrumentItemSelected
+                  ]}
+                  onPress={() => setSelectedInstrument(key)}
+                >
+                  <View style={[styles.instrumentItemIcon, { backgroundColor: instrument.color }]}>
+                    <Text style={styles.instrumentItemIconText}>{instrument.icon}</Text>
+                  </View>
+                  <Text style={styles.instrumentItemText}>{instrument.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </Animated.View>
+        )}
+      </LinearGradient>
+    </GestureHandlerRootView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
-    borderRadius: 8,
-    overflow: 'hidden',
+    backgroundColor: COLORS.background,
+  },
+  gradientBackground: {
+    flex: 1,
+    padding: 16,
   },
   header: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
-    backgroundColor: '#1E1E1E',
+    marginBottom: 16,
   },
-  beatTitle: {
-    fontSize: 18,
+  title: {
+    fontSize: 24,
     fontWeight: 'bold',
-    color: '#FFFFFF',
-  },
-  beatInfo: {
-    fontSize: 14,
-    color: '#BBBBBB',
-    marginTop: 4,
-  },
-  transportControls: {
-    flexDirection: 'row',
-    marginTop: 12,
-  },
-  transportButton: {
-    backgroundColor: '#7C4DFF',
-    borderRadius: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginRight: 8,
-  },
-  stopButton: {
-    backgroundColor: '#CF6679',
-  },
-  transportButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
-  beatGrid: {
-    flex: 1,
-  },
-  gridLabels: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
-  },
-  cornerLabel: {
-    width: 100,
-    padding: 8,
-    backgroundColor: '#2D2D2D',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cornerText: {
-    color: '#BBBBBB',
-    fontSize: 12,
-  },
-  stepLabels: {
-    flex: 1,
-    flexDirection: 'row',
-    backgroundColor: '#2D2D2D',
-    paddingVertical: 8,
-  },
-  stepLabel: {
-    width: 24,
-    textAlign: 'center',
-    color: '#BBBBBB',
-    fontSize: 12,
-  },
-  patternsContainer: {
-    flex: 1,
-  },
-  patternRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: '#333',
-  },
-  patternInfo: {
-    width: 100,
-    padding: 8,
-    justifyContent: 'center',
-    backgroundColor: '#2D2D2D',
-  },
-  patternName: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  patternCategory: {
-    color: '#BBBBBB',
-    fontSize: 10,
-    marginTop: 2,
-  },
-  stepsContainer: {
-    flex: 1,
-  },
-  stepsRow: {
-    flexDirection: 'row',
-    height: 40,
-    alignItems: 'center',
-  },
-  step: {
-    width: 16,
-    height: 16,
-    borderRadius: 2,
-    backgroundColor: '#333333',
-    margin: 2,
-  },
-  activeStep: {
-    backgroundColor: '#7C4DFF',
-  },
-  currentStep: {
-    borderColor: '#FFFFFF',
-    borderWidth: 2,
-  },
-  hoveredStep: {
-    opacity: 0.8,
-  },
-  beatStart: {
-    marginLeft: 4,
-  },
-  barStart: {
-    marginLeft: 8,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  emptyText: {
-    color: '#BBBBBB',
-    fontSize: 16,
-    textAlign: 'center',
-  },
-  beatControls: {
-    flexDirection: 'row',
-    padding: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-    backgroundColor: '#1E1E1E',
-  },
-  controlGroup: {
-    flex: 1,
-    marginRight: 16,
-  },
-  controlLabel: {
-    color: '#BBBBBB',
-    fontSize: 12,
+    color: COLORS.text,
     marginBottom: 4,
   },
-  bpmControl: {
+  beatInfo: {
+    fontSize: 16,
+    color: COLORS.textSecondary,
+  },
+  gridContainer: {
+    backgroundColor: COLORS.gridBackground,
+    borderRadius: 12,
+    overflow: 'hidden',
+    padding: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  gridScrollContainer: {
+    flexDirection: 'column',
+  },
+  gridRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 4,
   },
-  bpmButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#333333',
+  instrumentLabel: {
+    width: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  instrumentIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 4,
+  },
+  instrumentIconText: {
+    fontSize: 12,
+  },
+  instrumentText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    flex: 1,
+  },
+  stepsContainer: {
+    flexDirection: 'row',
+    flex: 1,
+  },
+  stepCell: {
     justifyContent: 'center',
     alignItems: 'center',
   },
-  bpmButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
+  activeCell: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: COLORS.activeGlow,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  activeCellInner: {
+    width: '70%',
+    height: '70%',
+    borderRadius: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+  },
+  inactiveCell: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: COLORS.inactive,
+  },
+  playhead: {
+    position: 'absolute',
+    top: 0,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.5)',
+  },
+  pageIndicatorsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 16,
+  },
+  pageIndicator: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.inactive,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 8,
+  },
+  pageIndicatorActive: {
+    backgroundColor: COLORS.primary,
+  },
+  pageIndicatorText: {
+    color: COLORS.textSecondary,
     fontWeight: 'bold',
   },
-  bpmValue: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    marginHorizontal: 12,
-    width: 40,
+  pageIndicatorTextActive: {
+    color: COLORS.text,
+  },
+  stepNumbersContainer: {
+    flexDirection: 'row',
+    marginLeft: 68,
+    marginBottom: 4,
+  },
+  stepNumber: {
+    fontSize: 10,
     textAlign: 'center',
   },
-  sliderContainer: {
+  controlsContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    justifyContent: 'space-around',
+    marginTop: 16,
   },
-  slider: {
+  controlButton: {
     flex: 1,
-    height: 8,
-    backgroundColor: '#333333',
-    borderRadius: 4,
+    marginHorizontal: 8,
+    height: 44,
+    borderRadius: 22,
     overflow: 'hidden',
   },
-  sliderFill: {
-    height: '100%',
-    backgroundColor: '#7C4DFF',
+  controlButtonGradient: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  sliderValue: {
-    color: '#FFFFFF',
+  controlButtonText: {
+    color: COLORS.text,
+    fontWeight: 'bold',
+    fontSize: 16,
+  },
+  instrumentsPanel: {
+    backgroundColor: 'rgba(26, 26, 31, 0.95)',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 16,
+  },
+  instrumentsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  instrumentItem: {
+    width: '23%',
+    backgroundColor: COLORS.inactive,
+    borderRadius: 8,
+    padding: 8,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  instrumentItemSelected: {
+    backgroundColor: COLORS.primary,
+  },
+  instrumentItemIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  instrumentItemIconText: {
+    fontSize: 16,
+  },
+  instrumentItemText: {
+    fontSize: 12,
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  emptyStateContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  emptyAnimation: {
+    width: 120,
+    height: 120,
+  },
+  emptyStateText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    marginTop: 16,
+  },
+  emptyStateSubtext: {
     fontSize: 14,
-    marginLeft: 12,
-    width: 40,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    marginTop: 8,
   },
 });
 
